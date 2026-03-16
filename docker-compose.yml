@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  pipeline:
+    build: .
+    volumes:
+      - ./data:/app/data          # mount CSV data folder
+      - ./pipeline.db:/app/pipeline.db  # persist the database
+      - ./pipeline.log:/app/pipeline.log
+    environment:
+      - DB_PATH=/app/pipeline.db
+      - LOG_LEVEL=INFO
+
+  scheduler:
+    build: .
+    command: python scheduler.py
+    volumes:
+      - ./data:/app/data
+      - ./pipeline.db:/app/pipeline.db
+      - ./pipeline.log:/app/pipeline.log
+    environment:
+      - DB_PATH=/app/pipeline.db
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
