@@ -1,70 +1,49 @@
 # Weather × App Engagement ETL Pipeline
 
-A production-style data engineering project that ingests live weather data and Google Play Store app metrics, joins them in a daily pipeline, and surfaces insights on how weather patterns influence app category engagement.
+A production-style data engineering pipeline that pulls live weather data from a real API daily, joins it with Google Play Store app engagement data, validates data quality at every stage, and loads results into a structured data mart.
 
-> **Business question:** Do people use Gaming, Streaming, and Fitness apps differently on rainy vs sunny days? This pipeline answers that with repeatable, scheduled data.
+**Stack:** Python · SQLite · Open-Meteo API · Docker · GitHub Actions · pytest
 
 ---
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    A[Open-Meteo API\nLive weather · Free · No key] --> C[Ingestion Layer]
+    B[Google Play Store CSV\nApp ratings + installs] --> C
+
+    C --> D[Transformation Layer\nClean · Classify · Join]
+    D --> E[Loading Layer\nQuality gates · Incremental load]
+
+    E --> F[(SQLite Warehouse)]
+
+    F --> G[raw_weather\nAppend-only ingest]
+    F --> H[stg_weather\nCleaned + classified]
+    F --> I[fct_weather_app_daily\nJoined fact table]
+    F --> J[mart_weather_app_insights\nFinal analytics mart]
+
+    style A fill:#E6F1FB,stroke:#378ADD,color:#0C447C
+    style B fill:#E6F1FB,stroke:#378ADD,color:#0C447C
+    style C fill:#EAF3DE,stroke:#1D9E75,color:#085041
+    style D fill:#EAF3DE,stroke:#1D9E75,color:#085041
+    style E fill:#EAF3DE,stroke:#1D9E75,color:#085041
+    style F fill:#FAEEDA,stroke:#BA7517,color:#633806
+    style G fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    style H fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    style I fill:#F1EFE8,stroke:#888780,color:#2C2C2A
+    style J fill:#F1EFE8,stroke:#888780,color:#2C2C2A
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        DATA SOURCES                             │
-│                                                                 │
-│  ┌──────────────────┐          ┌──────────────────────────────┐ │
-│  │  Open-Meteo API  │          │  Google Play Store CSV       │ │
-│  │  (Free, no key)  │          │  (Kaggle / static seed)      │ │
-│  │  weather by city │          │  app ratings + installs      │ │
-│  └────────┬─────────┘          └──────────────┬───────────────┘ │
-└───────────┼─────────────────────────────────── ┼───────────────┘
-            │                                    │
-            ▼                                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      INGESTION LAYER                            │
-│                                                                 │
-│   ingestion/weather_ingest.py        ingestion/app_ingest.py   │
-│   • Pulls hourly weather per city    • Loads + seeds app data  │
-│   • Validates schema on arrival      • Deduplicates on load     │
-│   • Writes to raw_weather table      • Writes to raw_apps table │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   TRANSFORMATION LAYER                          │
-│                                                                 │
-│   transformation/transform.py                                   │
-│   • Cleans types, normalises fields                             │
-│   • Classifies weather (Sunny/Rainy/Cloudy/Snowy)              │
-│   • Aggregates app metrics by category                          │
-│   • Joins weather + app category data                           │
-│   • Writes to stg_weather, stg_apps, fct_weather_app_daily     │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      LOADING LAYER                              │
-│                                                                 │
-│   loading/load.py                                               │
-│   • Incremental load — only inserts new dates                   │
-│   • Runs data quality checks before committing                  │
-│   • Logs row counts, null rates, and load status               │
-│   • Writes final output to mart_weather_app_insights           │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    DATA WAREHOUSE (SQLite)                      │
-│                                                                 │
-│   pipeline.db                                                   │
-│   ├── raw_weather          (append-only raw ingest)             │
-│   ├── raw_apps             (seeded once from CSV)               │
-│   ├── stg_weather          (cleaned + classified)               │
-│   ├── stg_apps             (cleaned + categorised)              │
-│   ├── fct_weather_app_daily (joined fact table)                 │
-│   └── mart_weather_app_insights (final analytics mart)         │
-└─────────────────────────────────────────────────────────────────┘
-```
+
+---
+
+## What Makes This Different
+
+Most pipeline tutorials show the happy path. This one handles the rest.
+
+Before any data reaches the mart, the pipeline runs quality checks — null rate validation, row count gates, referential integrity, range checks. If anything fails, the pipeline halts and logs exactly why. No silent failures, no bad data quietly making it into reports.
+
+It also runs incrementally — reruns never create duplicates. Every stage is logged with timestamps and row counts. The whole thing runs in Docker with one command.
 
 ---
 
@@ -73,13 +52,35 @@ A production-style data engineering project that ingests live weather data and G
 | Feature | Detail |
 |---|---|
 | Live API ingestion | Open-Meteo weather API — free, no key required |
-| Incremental loading | Only processes new dates — idempotent reruns |
-| Data quality gates | Null checks, row count validation, range checks before commit |
-| Modular design | Ingestion / Transformation / Loading are fully independent layers |
-| Configurable cities | Add any city in `config/settings.py` |
-| Unit tested | `pytest` suite covers transformations and quality checks |
+| Incremental loading | Only processes new dates — safe to rerun anytime |
+| Data quality gates | Null checks, row count validation, range checks before every commit |
+| Modular layers | Ingestion, Transformation, and Loading are fully independent |
+| Unit tested | pytest suite covers all transform logic and quality checks |
 | Dockerised | Runs anywhere with one command |
-| Logging | Structured logs for every pipeline stage |
+| Scheduled | Runs daily at 6am via scheduler.py or GitHub Actions |
+| Audit log | Every pipeline run is logged with stage, rows, and status |
+
+---
+
+## Quickstart
+
+**Docker (recommended)**
+```bash
+git clone https://github.com/Aaditya0212/weather-app-etl.git
+cd weather-app-etl
+docker-compose up
+```
+
+**Local Python**
+```bash
+pip install -r requirements.txt
+python pipeline.py
+```
+
+**Run tests**
+```bash
+pytest tests/ -v
+```
 
 ---
 
@@ -87,93 +88,40 @@ A production-style data engineering project that ingests live weather data and G
 
 ```
 weather-app-etl/
-│
 ├── ingestion/
-│   ├── weather_ingest.py       # Pulls weather from Open-Meteo API
-│   └── app_ingest.py           # Seeds app data from CSV
-│
+│   ├── weather_ingest.py      # Pulls hourly weather from Open-Meteo API
+│   └── app_ingest.py          # Seeds app data from CSV
 ├── transformation/
-│   └── transform.py            # Cleans, classifies, joins data
-│
+│   └── transform.py           # Cleans, classifies weather, joins datasets
 ├── loading/
-│   └── load.py                 # Incremental load + quality checks
-│
+│   └── load.py                # Quality checks + incremental mart load
 ├── sql/
-│   ├── create_schema.sql       # All table definitions
-│   └── analytical_queries.sql  # Business insight queries
-│
+│   ├── create_schema.sql      # Full table definitions
+│   └── analytical_queries.sql # Business insight queries
 ├── tests/
-│   ├── test_transform.py       # Unit tests for transform logic
-│   └── test_quality.py         # Data quality check tests
-│
+│   ├── test_transform.py      # Unit tests for transform logic
+│   └── test_quality.py        # Data quality check tests
 ├── config/
-│   └── settings.py             # Cities, API config, thresholds
-│
-├── pipeline.py                 # Main orchestrator — runs full ETL
-├── scheduler.py                # Runs pipeline daily at 6am
+│   └── settings.py            # Cities, thresholds, API config
+├── pipeline.py                # Main orchestrator
+├── scheduler.py               # Daily scheduler
 ├── Dockerfile
 ├── docker-compose.yml
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
 
 ---
 
-## Quickstart
-
-**Option 1 — Docker (recommended)**
-```bash
-git clone https://github.com/Aaditya0212/weather-app-etl.git
-cd weather-app-etl
-docker-compose up
-```
-
-**Option 2 — Local Python**
-```bash
-git clone https://github.com/Aaditya0212/weather-app-etl.git
-cd weather-app-etl
-pip install -r requirements.txt
-python pipeline.py
-```
-
-**Run tests:**
-```bash
-pytest tests/ -v
-```
-
----
-
-## Sample Insight Output
+## Data Model
 
 ```
-Weather × App Category Engagement (Last 30 Days)
-─────────────────────────────────────────────────
-Weather Type   Category      Avg Rating   Install Index
-──────────────────────────────────────────────────────
-Rainy          GAME          4.21         +18% vs baseline
-Rainy          VIDEO_PLAYERS 4.35         +24% vs baseline
-Sunny          HEALTH        4.41         +31% vs baseline
-Sunny          SPORTS        4.38         +27% vs baseline
-Cloudy         PRODUCTIVITY  4.18         +9% vs baseline
+raw_weather        → append-only hourly ingest from API
+raw_apps           → seeded once from Google Play Store CSV
+stg_weather        → cleaned, daily aggregated, weather classified
+stg_apps           → cleaned, deduped, categorised
+fct_weather_app_daily → joined fact table (weather × app category × city × date)
+mart_weather_app_insights → final mart with install index and pct vs baseline
 ```
-
----
-
-## Tech Stack
-
-`Python 3.11` · `SQLite` · `Open-Meteo API` · `Pandas` · `Requests` · `pytest` · `Docker` · `schedule`
-
----
-
-## Why This Project
-
-Most ETL portfolios load a CSV and call it a pipeline. This project demonstrates what a real pipeline looks like:
-
-- **Live data** from an actual API, pulled on a schedule
-- **Incremental loading** — reruns don't create duplicates
-- **Quality gates** — bad data is caught before it reaches the mart
-- **Separation of concerns** — each layer does one job
-- **Reproducibility** — Docker means it runs the same everywhere
 
 ---
 
